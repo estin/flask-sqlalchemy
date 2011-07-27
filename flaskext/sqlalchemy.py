@@ -9,6 +9,7 @@
     :license: BSD, see LICENSE for more details.
 """
 from __future__ import with_statement, absolute_import
+import os
 import re
 import sys
 import time
@@ -412,6 +413,7 @@ class _EngineConnector(object):
         assert self._bind in binds, \
             'Bind %r is not specified.  Set it in the SQLALCHEMY_BINDS ' \
             'configuration variable' % self._bind
+        return binds[self._bind]
 
     def get_engine(self):
         with self._lock:
@@ -681,9 +683,11 @@ class SQLAlchemy(object):
             options.setdefault('pool_recycle', 7200)
         elif info.drivername == 'sqlite':
             pool_size = options.get('pool_size')
+            detected_in_memory = False
             # we go to memory and the pool size was explicitly set to 0
             # which is fail.  Let the user know that
             if info.database in (None, '', ':memory:'):
+                detected_in_memory = True
                 if pool_size == 0:
                     raise RuntimeError('SQLite in memory database with an '
                                        'empty queue not possible due to data '
@@ -694,6 +698,10 @@ class SQLAlchemy(object):
             elif not pool_size:
                 from sqlalchemy.pool import NullPool
                 options['poolclass'] = NullPool
+
+            # if it's not an in memory database we make the path absolute.
+            if not detected_in_memory:
+                info.database = os.path.join(app.root_path, info.database)
 
         unu = app.config['SQLALCHEMY_NATIVE_UNICODE']
         if unu is None:
@@ -724,7 +732,7 @@ class SQLAlchemy(object):
             state = get_state(app)
             connector = state.connectors.get(bind)
             if connector is None:
-                connector = self.make_connector(app)
+                connector = self.make_connector(app, bind)
                 state.connectors[bind] = connector
             return connector.get_engine()
 
