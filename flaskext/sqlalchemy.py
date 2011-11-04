@@ -184,11 +184,12 @@ class _SignallingSessionExtension(SessionExtension):
 class _SignallingSession(Session):
 
     def __init__(self, db, autocommit=False, autoflush=False, **options):
-        Session.__init__(self, autocommit=autocommit, autoflush=autoflush,
-                         extension=db.session_extensions,
-                         bind=db.engine, **options)
         self.app = db.get_app()
         self._model_changes = {}
+        Session.__init__(self, autocommit=autocommit, autoflush=autoflush,
+                         extension=db.session_extensions,
+                         bind=db.engine,
+                         binds=db.get_binds(self.app), **options)
 
     def get_bind(self, mapper, clause=None):
         # mapper is None if someone tries to just get a connection
@@ -450,7 +451,7 @@ class _BoundDeclarativeMeta(DeclarativeMeta):
         # attach a primary key to support model inheritance that does
         # not use joins.  We also don't want a table name if a whole
         # table is defined
-        if not tablename and not d.get('__table__') and \
+        if not tablename and d.get('__table__') is None and \
            _defines_primary_key(d):
             def _join(match):
                 word = match.group()
@@ -585,6 +586,10 @@ class SQLAlchemy(object):
 
     .. versionadded:: 0.10
        The `session_options` parameter was added.
+
+    .. versionadded:: 0.16
+       `scopefunc` is now accepted on `session_options`. It allows specifying
+        a custom function which will define the SQLAlchemy session's scoping.
     """
 
     def __init__(self, app=None, use_native_unicode=True,
@@ -593,6 +598,14 @@ class SQLAlchemy(object):
         self.use_native_unicode = use_native_unicode
         self.session_extensions = to_list(session_extensions, []) + \
                                   [_SignallingSessionExtension()]
+
+        if session_options is None:
+            session_options = {}
+
+        session_options.setdefault(
+            'scopefunc', _request_ctx_stack.__ident_func__
+        )
+
         self.session = self.create_scoped_session(session_options)
         self.metaclass = metaclass if metaclass else _BoundDeclarativeMeta
         self.Model = self.make_declarative_base()
@@ -616,7 +629,10 @@ class SQLAlchemy(object):
         """Helper factory method that creates a scoped session."""
         if options is None:
             options = {}
-        return orm.scoped_session(partial(_SignallingSession, self, **options))
+        scopefunc=options.pop('scopefunc', None)
+        return orm.scoped_session(
+            partial(_SignallingSession, self, **options), scopefunc=scopefunc
+        )
 
     def make_declarative_base(self):
         """Creates the declarative base."""
@@ -757,6 +773,20 @@ class SQLAlchemy(object):
             if table.info.get('bind_key') == bind:
                 result.append(table)
         return result
+
+    def get_binds(self, app=None):
+        """Returns a dictionary with a table->engine mapping.
+
+        This is suitable for use of sessionmaker(binds=db.get_binds(app)).
+        """
+        app = self.get_app(app)
+        binds = [None] + list(app.config.get('SQLALCHEMY_BINDS') or ())
+        retval = {}
+        for bind in binds:
+            engine = self.get_engine(app, bind)
+            tables = self.get_tables_for_bind(bind)
+            retval.update(dict((table, engine) for table in tables))
+        return retval
 
     def _execute_for_all_tables(self, app, bind, operation):
         app = self.get_app(app)

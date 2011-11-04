@@ -195,7 +195,9 @@ class BindsTestCase(unittest.TestCase):
         import tempfile
         _, db1 = tempfile.mkstemp()
         _, db2 = tempfile.mkstemp()
+
         def _remove_files():
+            import os
             try:
                 os.remove(db1)
                 os.remove(db2)
@@ -204,6 +206,7 @@ class BindsTestCase(unittest.TestCase):
         atexit.register(_remove_files)
 
         app = flask.Flask(__name__)
+        app.config['SQLALCHEMY_ENGINE'] = 'sqlite://'
         app.config['SQLALCHEMY_BINDS'] = {
             'foo':      'sqlite:///' + db1,
             'bar':      'sqlite:///' + db2
@@ -253,6 +256,13 @@ class BindsTestCase(unittest.TestCase):
         metadata.reflect(bind=db.get_engine(app))
         self.assertEqual(len(metadata.tables), 1)
         self.assert_('baz' in metadata.tables)
+
+        # do the session have the right binds set?
+        self.assertEqual(db.get_binds(app), {
+            Foo.__table__: db.get_engine(app, 'foo'),
+            Bar.__table__: db.get_engine(app, 'bar'),
+            Baz.__table__: db.get_engine(app, None)
+        })
 
 
 class DefaultQueryClassTestCase(unittest.TestCase):
@@ -366,6 +376,44 @@ class RegressionTestCase(unittest.TestCase):
         db = sqlalchemy.SQLAlchemy(app)
         assert db.session.connection()
 
+class SessionScopingTestCase(unittest.TestCase):
+
+    def test_default_session_scoping(self):
+        app = flask.Flask(__name__)
+        app.config['SQLALCHEMY_ENGINE'] = 'sqlite://'
+        app.config['TESTING'] = True
+        db = sqlalchemy.SQLAlchemy(app)
+
+        class FOOBar(db.Model):
+            id = db.Column(db.Integer, primary_key=True)
+
+        db.create_all()
+
+        with app.test_request_context():
+            fb = FOOBar()
+            db.session.add(fb)
+            assert fb in db.session
+
+    def test_session_scoping_changing(self):
+        app = flask.Flask(__name__)
+        app.config['SQLALCHEMY_ENGINE'] = 'sqlite://'
+        app.config['TESTING'] = True
+
+        def scopefunc():
+            return id(dict())
+
+        db = sqlalchemy.SQLAlchemy(app, session_options=dict(scopefunc=scopefunc))
+
+        class FOOBar(db.Model):
+            id = db.Column(db.Integer, primary_key=True)
+
+        db.create_all()
+
+        with app.test_request_context():
+            fb = FOOBar()
+            db.session.add(fb)
+            assert fb not in db.session  # because a new scope is generated on each call
+
 
 def suite():
     suite = unittest.TestSuite()
@@ -377,6 +425,7 @@ def suite():
     suite.addTest(unittest.makeSuite(DefaultQueryClassTestCase))
     suite.addTest(unittest.makeSuite(SQLAlchemyIncludesTestCase))
     suite.addTest(unittest.makeSuite(RegressionTestCase))
+    suite.addTest(unittest.makeSuite(SessionScopingTestCase))
     if flask.signals_available:
         suite.addTest(unittest.makeSuite(SignallingTestCase))
     return suite
